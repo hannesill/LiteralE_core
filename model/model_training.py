@@ -1,3 +1,4 @@
+import random
 import torch
 from torch.optim import Adam
 from model.init_batch import init_batch
@@ -14,6 +15,9 @@ def train_model(model, data_er_train, data_er_valid, entities_to_ix, relationshi
         print(f"Epoch {epoch + 1}")
         total_loss = 0
         model.train()
+
+        # Sample data by randomizing the order of the triples
+        random.shuffle(data_er_train)
 
         for i in range(0, len(data_er_train), batch_size):
             optimizer.zero_grad()

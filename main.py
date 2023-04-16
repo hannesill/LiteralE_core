@@ -1,9 +1,33 @@
 import argparse
+import os
+
+import numpy as np
 import torch
 from model.models import DistMult, DistMultLit
 from model.model_training import train_model
 from model.model_testing import test_model, manual_test
 from data.prepare_literals import load_literals, index_num_literals, embed_text_literals
+
+
+def get_preprocessed_literals():
+    # If the literals have already been preprocessed, load them from the file
+    if os.path.exists(f"data/store/{dataset}_num_lit.npy") and \
+            os.path.exists(f"data/store/{dataset}_text_lit.npy"):
+        print("Loading preprocessed literals...")
+        num_lit = np.load(f"data/store/{dataset}_num_lit.npy")
+        text_lit = np.load(f"data/store/{dataset}_text_lit.npy")
+    # Else, preprocess them and save them to a file
+    else:
+        data_raw_num_lit, data_raw_text_lit = load_literals(LITERALS_PATH)
+        data_num_lit = preprocess_data(data_raw_num_lit)
+        data_text_lit = preprocess_data(data_raw_text_lit)
+        num_lit = index_num_literals(data_num_lit, entities_to_ix)
+        text_lit = embed_text_literals(data_text_lit, entities_to_ix)
+        np.save(f"data/store/{dataset}_num_lit.npy", num_lit)
+        np.save(f"data/store/{dataset}_text_lit.npy", text_lit)
+
+    return torch.from_numpy(num_lit), torch.from_numpy(text_lit)
+
 
 if __name__ == "__main__":
     # Device config
@@ -12,19 +36,24 @@ if __name__ == "__main__":
     dataset = "FB15k-237"
     print(f"Dataset: {dataset}")
 
+    # TODO: Set random seed
     # TODO: Get all parameter values from argparse
     epochs = 2
-    embedding_dim = 200
+    embedding_dim = 100
     batch_size = 100
     learning_rate = 0.001
     parser = argparse.ArgumentParser()
     parser.add_argument("--lit", action="store_true")
     args = parser.parse_args()
     if args.lit:
-        modelType = "DistMultLit"
+        model_type = "DistMultLit"
     else:
-        modelType = "DistMult"
-    print(f"Model type: {modelType}")
+        model_type = "DistMult"
+    print(f"Model type: {model_type}")
+
+    # Paths to save and load models
+    MODEL_PATH = f"data/store/model_{model_type}_{dataset}.pth"
+    LIT_EMB_MODEL_PATH = f"data/store/model_LiteralEmbedding_{dataset}.pth"
 
     # Load the data
     DATASET_PATH = "data/dataset"
@@ -54,9 +83,7 @@ if __name__ == "__main__":
     data_er_valid = preprocess_data(data_raw_er_valid)
     data_er_test = preprocess_data(data_raw_er_test)
 
-    # Create vocabularies and token_to_ix dictionaries
-    # TODO: Am I allowed to use the test data for this? Probably depends on whether the test data contains
-    #  new entities and relationships or not
+    # Create vocabularies and token_to_ix dictionaries. It's allowed to include the test data in the vocabularies.
     data_er_all = data_er_train + data_er_valid + data_er_test
     entities_vocab = set()
     relationships_vocab = set()
@@ -72,29 +99,56 @@ if __name__ == "__main__":
     print(f"Number of unique entities: {len(entities_vocab)}")
     print(f"Number of unique relationships: {len(relationships_vocab)}")
 
-    # Set hyperparameters and initialize the model
-    # For DistMult
-    if modelType == "DistMult":
-        model = DistMult(len(entities_vocab), len(relationships_vocab), embedding_dim)
+    # If a model has already been trained, load it
+    if os.path.exists(MODEL_PATH):
+        print("Loading model...")
+        # For DistMult
+        if model_type == "DistMult":
+            # Initialize the DistMult model
+            model = DistMult(len(entities_vocab), len(relationships_vocab), embedding_dim)
+        # For DistMultLit
+        else:
+            # TODO: Warum ist test loss bei geladenem Model doppelt so hoch als bei frisch trainiertem?
+            # Get the preprocessed literals (either from the file if it exists, or by preprocessing them)
+            num_lit, text_lit = get_preprocessed_literals()
+            # Initialize the DistMultLit model
+            model = DistMultLit(len(entities_vocab), len(relationships_vocab), num_lit, text_lit, embedding_dim)
+            # Load the literal embedding model
+            model.set_literal_embedding_model(torch.load(LIT_EMB_MODEL_PATH))
 
-    # For DistMultLit
+        # Load the model
+        model.load_state_dict(torch.load(MODEL_PATH))
+        model.eval()
+        print("Model loaded.")
+
+    # Else, train a new model
     else:
-        # Load & preprocess the literals
-        data_raw_num_lit, data_raw_text_lit = load_literals(LITERALS_PATH)
-        data_num_lit = preprocess_data(data_raw_num_lit)
-        data_text_lit = preprocess_data(data_raw_text_lit)
-        num_lit = index_num_literals(data_num_lit, entities_to_ix)
-        text_lit = embed_text_literals(data_text_lit, entities_to_ix)
+        # Set hyperparameters and initialize the model
+        # For DistMult
+        if model_type == "DistMult":
+            # Initialize the DistMult model
+            model = DistMult(len(entities_vocab), len(relationships_vocab), embedding_dim)
 
-        model = DistMultLit(len(entities_vocab), len(relationships_vocab), num_lit, text_lit, embedding_dim)
+        # For DistMultLit
+        else:
+            # Get the preprocessed literals (either from the file if it exists, or by preprocessing them)
+            num_lit, text_lit = get_preprocessed_literals()
 
-    # Train the model
-    train_model(model, data_er_train, data_er_valid, entities_to_ix, relationships_to_ix, epochs, batch_size,
-                learning_rate)
+            # Initialize the DistMultLit model
+            model = DistMultLit(len(entities_vocab), len(relationships_vocab), num_lit, text_lit, embedding_dim)
+
+        # Train the model
+        train_model(model, data_er_train, data_er_valid, entities_to_ix, relationships_to_ix, epochs, batch_size,
+                    learning_rate)
 
     # Test the model
     test_model(model, data_er_test, entities_to_ix, relationships_to_ix, batch_size)
 
     # TODO: Add manual test(s). In order for them to make sense, I need to let the model train for more epochs
 
-    # TODO: Save the model
+    # Save the model
+    torch.save(model.state_dict(), MODEL_PATH)
+
+    # If it got used, save the literal embedding model
+    if model_type == "DistMultLit":
+        torch.save(model.get_literal_embedding_model(), LIT_EMB_MODEL_PATH)

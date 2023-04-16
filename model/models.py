@@ -27,7 +27,8 @@ class DistMult(nn.Module):
         e2_emb = self.entity_embeddings(e2)
 
         resDistMult = torch.mm(e1_emb * r_emb, e2_emb.transpose(1, 0))
-        return torch.sigmoid(resDistMult) > 0.5
+        return torch.sigmoid(resDistMult) > 0.5 # TODO: Classification threshold gets set dynamically.
+        # No classification only regression
 
 
 #
@@ -85,3 +86,9 @@ class DistMultLit(nn.Module):
 
         resDistMult = torch.mm(e1_emb * r_emb, e2_all_emb.transpose(1, 0))
         return torch.sigmoid(resDistMult)
+
+    def get_literal_embedding_model(self):
+        return self.literal_embeddings.state_dict()
+
+    def set_literal_embedding_model(self, model):
+        self.literal_embeddings.load_state_dict(model)
